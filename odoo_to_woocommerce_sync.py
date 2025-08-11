@@ -1,21 +1,25 @@
 import requests
 import json
+from requests.auth import HTTPBasicAuth
 
 # ---------- CONFIG ----------
-ODOO_URL = 'http://localhost:8069'   # Odoo base
-ODOO_DB  = 'testmodule'              # Your Odoo database
-ODOO_USER = 'ankuxshh72@gmail.com'   # Your Odoo username (email)
-ODOO_PASS = 'admin2025'              # Your Odoo password
+ODOO_URL = 'http://localhost:8069'
+ODOO_DB = 'testmodule'
+ODOO_USER = 'ankuxshh72@gmail.com'
+ODOO_PASS = 'admin2025'
 
-WC_BASE = 'http://localhost/wordpress'  # Your WordPress site base URL
-WC_CONSUMER_KEY = 'ck_15edb3e5f6ff39dd35f87a9a0ec076ff1bca6890'
-WC_CONSUMER_SECRET = 'cs_84d90dd251008102e78e0e3111dc03b190957f29'
+WC_BASE = "http://localhost/wordpress"
+WC_CONSUMER_KEY = "ck_0e1f95fce66a82088b447342158d6aa9180691aa"
+WC_CONSUMER_SECRET = "cs_01e0abf3a17309de5edb936085b3f176f682510c"
 # ----------------------------
 
 JSONRPC_URL = ODOO_URL + '/jsonrpc'
+WC_PRODUCTS_URL = f"{WC_BASE}/wp-json/wc/v3/products"
 
+# ----------------------------
+# Odoo JSON-RPC Helper
+# ----------------------------
 def odoo_jsonrpc(service, method, args, req_id=1):
-    """Send a JSON-RPC request to Odoo."""
     payload = {
         'jsonrpc': '2.0',
         'method': 'call',
@@ -30,30 +34,26 @@ def odoo_jsonrpc(service, method, args, req_id=1):
     r.raise_for_status()
     return r.json()
 
-def login():
-    """Login to Odoo and return the user ID."""
+def login_odoo():
     res = odoo_jsonrpc('common', 'login', [ODOO_DB, ODOO_USER, ODOO_PASS], req_id=11)
     uid = res.get('result')
     if not uid:
         raise Exception('Odoo login failed: ' + json.dumps(res))
     return uid
 
-def fetch_products(uid, limit=10):
-    """Fetch product data from Odoo."""
+def fetch_odoo_products(uid, limit=10):
     fields = ['id', 'name', 'list_price', 'description_sale', 'qty_available']
     res = odoo_jsonrpc(
         'object', 'execute_kw',
-        [ODOO_DB, uid, ODOO_PASS, 'product.template', 'search_read',
-         [[]], {'fields': fields, 'limit': limit}],
+        [ODOO_DB, uid, ODOO_PASS, 'product.template', 'search_read', [[]], {'fields': fields, 'limit': limit}],
         req_id=12
     )
     return res.get('result', [])
 
-from requests.auth import HTTPBasicAuth
-
+# ----------------------------
+# WooCommerce Helpers
+# ----------------------------
 def create_wc_product(product):
-    url = f"{WC_BASE}/wp-json/wc/v3/products"
-
     payload = {
         'name': product.get('name') or 'Unnamed',
         'type': 'simple',
@@ -62,44 +62,33 @@ def create_wc_product(product):
         'stock_quantity': int(product.get('qty_available') or 0),
         'manage_stock': True
     }
+    r = requests.post(WC_PRODUCTS_URL, auth=HTTPBasicAuth(WC_CONSUMER_KEY, WC_CONSUMER_SECRET), json=payload)
+    if r.status_code == 201:
+        print(f"✅ Created WC product: {product['name']}")
+        return r.json()
+    else:
+        print(f"❌ Failed to create {product['name']} - {r.status_code} - {r.text}")
+        return None
 
-    r = requests.post(url, json=payload, auth=HTTPBasicAuth(WC_CONSUMER_KEY, WC_CONSUMER_SECRET))
+def fetch_wc_products():
+    r = requests.get(WC_PRODUCTS_URL, auth=HTTPBasicAuth(WC_CONSUMER_KEY, WC_CONSUMER_SECRET))
+    if r.status_code == 200:
+        products = r.json()
+        print(f"\n📦 WooCommerce Products ({len(products)})")
+        for p in products:
+            print(f"- {p['id']}: {p['name']} (${p['price']})")
+    else:
+        print(f"❌ Failed to fetch WC products: {r.status_code} - {r.text}")
 
-    if r.status_code not in (200, 201):
-        print(f"[ERROR] WooCommerce API returned {r.status_code}: {r.text}")
-        r.raise_for_status()
-
-    return r.json()
-
-def test_wc_connection():
-    """Test WooCommerce API connection before syncing products."""
-    print("Testing WooCommerce connection...")
-    url = f"{WC_BASE}/wp-json/wc/v3/products"
-    auth = (WC_CONSUMER_KEY, WC_CONSUMER_SECRET)
-    
-    try:
-        r = requests.get(url, auth=auth, params={'per_page': 1})
-        print(f"Connection test status: {r.status_code}")
-        
-        if r.status_code == 200:
-            print("✅ WooCommerce connection successful!")
-        else:
-            print(f"❌ Connection test failed: {r.text}")
-    except Exception as e:
-        print(f"🚫 Connection test error: {str(e)}")
-
-def main():
-    uid = login()
-    products = fetch_products(uid, limit=20)
-    print(f"Found {len(products)} products in Odoo.")
-
-    for i, p in enumerate(products, 1):
-        try:
-            wc_product = create_wc_product(p)
-            print(f"({i}/{len(products)}) Created WC product: {wc_product.get('id')} => {wc_product.get('name')}")
-        except Exception as e:
-            print(f"⚠️ Failed to create product {p.get('name')}: {str(e)}")
-
+# ----------------------------
+# Main Script
+# ----------------------------
 if __name__ == '__main__':
-    test_wc_connection()  # Test connection first
-    main()
+    uid = login_odoo()
+    odoo_products = fetch_odoo_products(uid, limit=5)
+    print(f"Found {len(odoo_products)} products in Odoo.")
+
+    for p in odoo_products:
+        create_wc_product(p)
+
+    fetch_wc_products()
